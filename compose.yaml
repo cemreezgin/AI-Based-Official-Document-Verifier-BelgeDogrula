@@ -1,0 +1,57 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b}
+      QWEN_TIMEOUT_SECONDS: ${QWEN_TIMEOUT_SECONDS:-120}
+      QWEN_REVIEW_MIN_SIMILARITY: ${QWEN_REVIEW_MIN_SIMILARITY:-0.75}
+      AUTO_MATCH_SIMILARITY: ${AUTO_MATCH_SIMILARITY:-0.85}
+      CANDIDATE_PREFIX_LINES: ${CANDIDATE_PREFIX_LINES:-12}
+      CANDIDATE_PREFIX_SIMILARITY: ${CANDIDATE_PREFIX_SIMILARITY:-0.35}
+      PADDLEOCR_DEVICE: ${PADDLEOCR_DEVICE:-cpu}
+      ENABLE_RESTORMER: ${ENABLE_RESTORMER:-true}
+      FETCH_OFFICIAL_DOCUMENT: ${FETCH_OFFICIAL_DOCUMENT:-true}
+      MAX_OFFICIAL_DOCUMENTS: ${MAX_OFFICIAL_DOCUMENTS:-5}
+      MAX_OFFICIAL_DEPTH: ${MAX_OFFICIAL_DEPTH:-2}
+      MAX_OFFICIAL_URLS: ${MAX_OFFICIAL_URLS:-12}
+      MAX_OFFICIAL_REDIRECTS: ${MAX_OFFICIAL_REDIRECTS:-3}
+      MAX_OFFICIAL_DOWNLOAD_MB: ${MAX_OFFICIAL_DOWNLOAD_MB:-20}
+      OFFICIAL_REQUEST_TIMEOUT_SECONDS: ${OFFICIAL_REQUEST_TIMEOUT_SECONDS:-15}
+      MAX_TOTAL_PROCESSING_SECONDS: ${MAX_TOTAL_PROCESSING_SECONDS:-1800}
+      MINIMUM_MATCH_CONFIDENCE: ${MINIMUM_MATCH_CONFIDENCE:-0.80}
+      ALLOWED_ORIGINS: http://localhost:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).read()"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+
+  proxy:
+    image: caddy:2-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

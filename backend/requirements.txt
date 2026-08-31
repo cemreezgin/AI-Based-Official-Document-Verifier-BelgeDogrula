@@ -1,0 +1,5 @@
+# Native macOS development dependencies. Linux and Windows Docker builds use
+# requirements-cpu.lock.txt so that PyTorch can never resolve CUDA packages.
+-r requirements-base.lock.txt
+torch==2.13.0
+torchvision==0.28.0

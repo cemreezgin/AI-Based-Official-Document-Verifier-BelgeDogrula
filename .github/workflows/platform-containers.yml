@@ -1,0 +1,98 @@
+name: Platform container checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-containers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reject platform-specific build artifacts
+        run: python tools/package_release.py --check
+
+  containers:
+    needs: source-hygiene
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            uname: x86_64
+          - platform: linux/arm64
+            arch: arm64
+            uname: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: belgedogrula-backend:ci-${{ matrix.arch }}
+          cache-from: type=gha,scope=backend-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=backend-${{ matrix.arch }}
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: belgedogrula-frontend:ci-${{ matrix.arch }}
+          cache-from: type=gha,scope=frontend-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=frontend-${{ matrix.arch }}
+
+      - name: Confirm image architecture
+        run: |
+          test "$(docker run --rm --platform '${{ matrix.platform }}' belgedogrula-backend:ci-${{ matrix.arch }} uname -m)" = "${{ matrix.uname }}"
+          test "$(docker run --rm --platform '${{ matrix.platform }}' belgedogrula-frontend:ci-${{ matrix.arch }} uname -m)" = "${{ matrix.uname }}"
+
+      - name: Run backend and synthetic acceptance tests
+        run: |
+          docker run --rm --platform '${{ matrix.platform }}' belgedogrula-backend:ci-${{ matrix.arch }} python -m unittest discover -s tests -v
+          docker run --rm --platform '${{ matrix.platform }}' --workdir /app/legacy/qr_document_verifier belgedogrula-backend:ci-${{ matrix.arch }} python -m unittest discover -s tests -v
+
+      - name: Start containers
+        run: |
+          docker run -d --platform '${{ matrix.platform }}' --name backend-${{ matrix.arch }} -e OLLAMA_HOST=http://127.0.0.1:9 -p 18000:8000 belgedogrula-backend:ci-${{ matrix.arch }}
+          docker run -d --platform '${{ matrix.platform }}' --name frontend-${{ matrix.arch }} -p 13000:3000 belgedogrula-frontend:ci-${{ matrix.arch }}
+
+      - name: Verify health endpoints
+        run: |
+          for attempt in $(seq 1 90); do
+            backend_status=$(curl --silent --output /tmp/backend-health.json --write-out '%{http_code}' http://127.0.0.1:18000/health || true)
+            frontend_status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:13000/ || true)
+            if [ "$backend_status" = 200 ] && [ "$frontend_status" = 200 ]; then
+              python -c "import json; data=json.load(open('/tmp/backend-health.json')); assert data['status'] == 'ok'"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs backend-${{ matrix.arch }}
+          docker logs frontend-${{ matrix.arch }}
+          exit 1
+
+      - name: Stop containers
+        if: always()
+        run: |
+          docker rm -f backend-${{ matrix.arch }} frontend-${{ matrix.arch }} 2>/dev/null || true
